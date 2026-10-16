@@ -3,11 +3,17 @@
 Unit tests (tests/unit) never need a database.
 
 Integration tests (tests/integration, auto-marked `integration`) need the
-PostgreSQL from infra/docker-compose.yml, with its two roles:
-  - Locally: `docker compose -f infra/docker-compose.yml up -d db`, then `uv run pytest`.
-    If the database is not running, integration tests are SKIPPED.
-  - In CI: REQUIRE_DB=1, so a missing database FAILS the run instead of
-    silently skipping it.
+PostgreSQL from infra/docker-compose.yml and reset its `leadops_test`
+database. They run only when explicitly allowed (see tests/db_guard.py):
+
+    docker compose -f infra/docker-compose.yml up -d db
+    $env:ALLOW_DESTRUCTIVE_TEST_DB = "true"      # PowerShell
+    export ALLOW_DESTRUCTIVE_TEST_DB=true        # bash
+    uv run pytest
+
+If the database is not running, integration tests are SKIPPED locally and
+FAIL in CI (REQUIRE_DB=1). If it is running but the guard is not satisfied,
+they FAIL: refusing is never silent.
 """
 
 import os
@@ -19,9 +25,11 @@ from fastapi.testclient import TestClient
 from leadops.config import Settings, get_settings
 from leadops.main import create_app
 
-LOCAL_APP_DATABASE_URL = "postgresql+asyncpg://leadops_app:leadops_app_dev@localhost:5434/leadops"
+LOCAL_APP_DATABASE_URL = (
+    "postgresql+asyncpg://leadops_app:leadops_app_dev@localhost:5434/leadops_test"
+)
 LOCAL_MIGRATION_DATABASE_URL = (
-    "postgresql+asyncpg://leadops_migrator:leadops_migrator_dev@localhost:5434/leadops"
+    "postgresql+asyncpg://leadops_migrator:leadops_migrator_dev@localhost:5434/leadops_test"
 )
 
 # Alembic's env.py reads Settings from the environment, so these must be set.

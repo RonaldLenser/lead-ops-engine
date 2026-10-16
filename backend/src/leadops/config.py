@@ -13,11 +13,14 @@ Two rules protect credentials:
    validation error, because those errors end up in terminals and logs.
 """
 
+import re
 from functools import lru_cache
+from ipaddress import IPv4Network, IPv6Network
 from typing import Literal, Self
 from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+import phonenumbers
+from pydantic import Field, IPvAnyNetwork, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 AppEnv = Literal["local", "test", "prod"]
@@ -32,6 +35,9 @@ DEV_DATABASE_PASSWORDS = frozenset(
     {"leadops_app_dev", "leadops_migrator_dev", "postgres", "password", "changeme"}
 )
 SUPERUSER_NAMES = frozenset({"postgres"})
+
+SOURCE_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+MIN_WEBHOOK_SECRET_LENGTH = 32
 
 
 def normalize_database_url(raw: str) -> str:
@@ -87,6 +93,30 @@ class Settings(BaseSettings):
     # ----- Health -----
     readiness_timeout_seconds: float = Field(default=2.0, gt=0, le=10)
 
+    # ----- Intake -----
+    # Hard cap on any request body (approved: 32 KB).
+    max_request_body_bytes: int = Field(default=32_768, ge=1_024, le=1_048_576)
+    # Region used to read phone numbers that have no country code.
+    default_phone_region: str = "US"
+    # Raw inbound payloads are purged after this many days. The purge job is
+    # built in M9; until then this value is configuration only.
+    raw_event_retention_days: int = Field(default=30, ge=1, le=3650)
+
+    # ----- Webhooks -----
+    # JSON object: source name -> list of shared secrets (several = rotation).
+    # Example: {"website_form": ["<at least 32 random characters>"]}
+    webhook_secrets: dict[str, list[SecretStr]] = Field(default_factory=dict)
+    webhook_timestamp_tolerance_seconds: int = Field(default=300, ge=30, le=900)
+
+    # ----- Client IP / proxies -----
+    # Only peers inside these networks may set X-Forwarded-For. Empty = trust none.
+    trusted_proxy_cidrs: list[IPvAnyNetwork] = Field(default_factory=list)
+
+    # ----- Rate limits (per process, requests per minute) -----
+    rate_limit_intake_per_ip: int = Field(default=60, ge=1, le=100_000)
+    rate_limit_intake_per_api_key: int = Field(default=120, ge=1, le=100_000)
+    rate_limit_webhook_per_source: int = Field(default=120, ge=1, le=100_000)
+
     @field_validator("database_url", "migration_database_url", mode="before")
     @classmethod
     def _normalize_url(cls, value: object) -> object:
@@ -100,6 +130,30 @@ class Settings(BaseSettings):
         # A "before" validator sees the raw input, before str_strip_whitespace
         # applies, so strip here explicitly.
         return SecretStr(normalize_database_url(raw.strip()))
+
+    @field_validator("default_phone_region")
+    @classmethod
+    def _known_region(cls, value: str) -> str:
+        region = value.upper()
+        if region not in phonenumbers.SUPPORTED_REGIONS:
+            raise ValueError("must be a two-letter region code such as US")
+        return region
+
+    @field_validator("webhook_secrets")
+    @classmethod
+    def _valid_webhook_secrets(
+        cls, value: dict[str, list[SecretStr]]
+    ) -> dict[str, list[SecretStr]]:
+        for source, secrets in value.items():
+            if not SOURCE_NAME.fullmatch(source):
+                raise ValueError("source names must be lowercase letters, digits, _ or -")
+            if not secrets:
+                raise ValueError("each webhook source needs at least one secret")
+            if any(len(s.get_secret_value()) < MIN_WEBHOOK_SECRET_LENGTH for s in secrets):
+                raise ValueError(
+                    f"webhook secrets must be at least {MIN_WEBHOOK_SECRET_LENGTH} characters"
+                )
+        return value
 
     @model_validator(mode="after")
     def _check_production_safety(self) -> Self:
@@ -126,6 +180,10 @@ class Settings(BaseSettings):
     @property
     def effective_migration_url(self) -> SecretStr:
         return self.migration_database_url or self.database_url
+
+    @property
+    def trusted_proxy_networks(self) -> list[IPv4Network | IPv6Network]:
+        return list(self.trusted_proxy_cidrs)
 
 
 @lru_cache

@@ -1,4 +1,4 @@
--- Database roles for LOCAL DEVELOPMENT AND CI ONLY.
+-- Database roles and databases for LOCAL DEVELOPMENT AND CI ONLY.
 --
 -- Runs once, as the superuser, when the Compose database volume is first
 -- created (Postgres image: /docker-entrypoint-initdb.d), and as an explicit
@@ -7,28 +7,26 @@
 -- and passwords are created by the deployment runbook (M9).
 --
 -- Two roles, least privilege:
---   leadops_migrator  owns the database and schema; only Alembic uses it.
+--   leadops_migrator  owns the databases and schemas; only Alembic uses it.
 --   leadops_app       what the API and worker use: read and write rows,
 --                     never create, alter, or drop anything.
+--
+-- Two databases:
+--   leadops       the development database the Compose API uses
+--   leadops_test  the ONLY database integration tests may reset. The test
+--                 suite refuses to run destructive operations against any
+--                 database whose name does not end in _test.
+--
+-- Expects to be connected to the `leadops` database (POSTGRES_DB).
 
 CREATE ROLE leadops_migrator LOGIN PASSWORD 'leadops_migrator_dev';
 CREATE ROLE leadops_app LOGIN PASSWORD 'leadops_app_dev';
 
--- The database owner also owns the public schema (PostgreSQL 15+), so the
--- migrator can create tables there.
-ALTER DATABASE leadops OWNER TO leadops_migrator;
+CREATE DATABASE leadops_test;
 
--- Nobody else may connect or create objects by default.
-REVOKE ALL ON DATABASE leadops FROM PUBLIC;
-GRANT CONNECT ON DATABASE leadops TO leadops_app;
-REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-GRANT USAGE ON SCHEMA public TO leadops_app;
+\set dbname leadops
+\ir lib/grants.sql
 
--- Every table and sequence the migrator creates from now on is automatically
--- usable (but not alterable) by the app role. Without this, each migration
--- would need its own GRANT statements and one forgotten grant would break
--- production.
-ALTER DEFAULT PRIVILEGES FOR ROLE leadops_migrator IN SCHEMA public
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO leadops_app;
-ALTER DEFAULT PRIVILEGES FOR ROLE leadops_migrator IN SCHEMA public
-    GRANT USAGE, SELECT ON SEQUENCES TO leadops_app;
+\connect leadops_test
+\set dbname leadops_test
+\ir lib/grants.sql

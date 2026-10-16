@@ -15,6 +15,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from leadops.config import get_settings
+from leadops.db import models  # noqa: F401  (registers every table on Base.metadata)
 from leadops.db.base import Base
 from leadops.logging_config import configure_logging
 

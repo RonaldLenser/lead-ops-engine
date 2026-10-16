@@ -16,9 +16,11 @@ import structlog
 from fastapi import FastAPI
 
 from leadops import __version__
+from leadops.api.body_limit import BodyLimitMiddleware
 from leadops.api.errors import register_error_handlers
 from leadops.api.middleware import RequestContextMiddleware
-from leadops.api.routes import health
+from leadops.api.rate_limit import TokenBucketLimiter
+from leadops.api.routes import health, intake, webhooks
 from leadops.config import Settings, get_settings
 from leadops.db.session import create_engine, create_session_factory
 from leadops.logging_config import configure_logging
@@ -51,7 +53,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = settings
+    # Per-process limiters (single-instance v1; see api/rate_limit.py and ADR-0011).
+    app.state.rate_limiters = {
+        "intake_ip": TokenBucketLimiter(settings.rate_limit_intake_per_ip),
+        "intake_api_key": TokenBucketLimiter(settings.rate_limit_intake_per_api_key),
+        "webhook_source": TokenBucketLimiter(settings.rate_limit_webhook_per_source),
+    }
+    # Middleware added last runs first. RequestContext is outermost so the
+    # request ID exists for everything inside, including a 413 from BodyLimit.
+    app.add_middleware(BodyLimitMiddleware, max_bytes=settings.max_request_body_bytes)
     app.add_middleware(RequestContextMiddleware)
     register_error_handlers(app)
     app.include_router(health.router)
+    app.include_router(intake.router)
+    app.include_router(webhooks.router)
     return app

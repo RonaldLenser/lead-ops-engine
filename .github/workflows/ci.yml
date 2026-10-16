@@ -35,10 +35,13 @@ jobs:
 
     env:
       APP_ENV: test
-      # Tests run as the restricted application role, exactly like production.
-      DATABASE_URL: postgresql+asyncpg://leadops_app:leadops_app_dev@localhost:5432/leadops
-      MIGRATION_DATABASE_URL: postgresql+asyncpg://leadops_migrator:leadops_migrator_dev@localhost:5432/leadops
+      # Tests run as the restricted application role, exactly like production,
+      # against the dedicated leadops_test database created by the roles script.
+      DATABASE_URL: postgresql+asyncpg://leadops_app:leadops_app_dev@localhost:5432/leadops_test
+      MIGRATION_DATABASE_URL: postgresql+asyncpg://leadops_migrator:leadops_migrator_dev@localhost:5432/leadops_test
       REQUIRE_DB: "1" # integration tests must FAIL, not skip, if the database is missing
+      # Explicit opt-in for the destructive reset of leadops_test (tests/db_guard.py).
+      ALLOW_DESTRUCTIVE_TEST_DB: "true"
 
     steps:
       # Actions pinned to commit SHAs: a tag can be moved, a SHA cannot.
@@ -49,7 +52,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: backend/uv.lock
 
-      - name: Create database roles (same script as local Compose)
+      - name: Create database roles and leadops_test (same script as local Compose)
         run: psql "postgresql://postgres:postgres@localhost:5432/leadops" -v ON_ERROR_STOP=1 -f ../infra/postgres/init/01-roles.sql
 
       - name: Install dependencies (exactly as locked)
@@ -105,6 +108,16 @@ jobs:
         run: |
           curl -sSf http://localhost:8000/healthz
           curl -sSf http://localhost:8000/readyz
+
+      - name: Submit a lead end to end (CLI-created key, then the API)
+        run: |
+          KEY=$(docker compose -f infra/docker-compose.yml exec -T api leadops api-keys create --name ci-smoke --scope leads:write | tail -n 1)
+          echo "::add-mask::$KEY"
+          curl -sSf -X POST http://localhost:8000/v1/leads \
+            -H "Authorization: Bearer $KEY" \
+            -H "Idempotency-Key: ci-smoke-1" \
+            -H "Content-Type: application/json" \
+            -d '{"source": "ci_smoke", "message": "Smoke test lead", "email": "smoke@example.com"}'
 
       - name: Container logs on failure
         if: failure()

@@ -42,7 +42,7 @@ Source: [DESIGN.md](DESIGN.md) sections 9, 10, 11.
 
 ---
 
-### Implemented so far (M1)
+### Implemented so far (M1, M2)
 
 | Control | Where | Verified by |
 |---|---|---|
@@ -53,6 +53,16 @@ Source: [DESIGN.md](DESIGN.md) sections 9, 10, 11.
 | Client request IDs accepted only if short and safe | `api/middleware.py` | `test_request_context.py` |
 | Secret scanning | `.pre-commit-config.yaml`, CI `secrets` job | gitleaks |
 | Container runs as a non-root user | `backend/Dockerfile` | CI Docker job |
+| Webhook HMAC (raw body, timestamp window, constant time, secret rotation); unsigned requests never stored | `integrations/signing.py`, `api/routes/webhooks.py` | `test_signing.py`, `test_intake_webhook.py` |
+| API keys: CSPRNG, prefix + SHA-256 only, shown once, scoped, revocable, uniform 401 | `security/api_keys.py`, `api/auth.py`, `cli.py` | `test_api_keys.py`, `test_intake_direct.py`, `test_cli.py` |
+| Idempotency on `(API key, Idempotency-Key)` and `(source, event_id)`; 409 on content mismatch | `services/intake.py`, migration 0002 | `test_intake_concurrency.py` (10 concurrent duplicates, 1 lead) |
+| All-or-nothing intake transaction | `services/intake.py` | `test_intake_atomicity.py` |
+| 32 KB body limit, including chunked bodies without Content-Length | `api/body_limit.py` | `test_body_limit.py` |
+| Per-IP (before auth), per-key, per-source rate limits | `api/rate_limit.py` | `test_rate_limit.py`, `test_rate_limit_and_client_ip.py` |
+| `X-Forwarded-For` trusted only from configured proxies | `api/client_ip.py` | `test_client_ip.py`, spoofing test in `test_rate_limit_and_client_ip.py` |
+| Emails, phone numbers, and API keys masked in all log output | `pii.py`, `logging_config.py` | `test_pii.py` |
+| `audit_events` append-only for the app role | migration 0002 | `test_database_roles.py` |
+| Destructive test setup refuses any database that is not local, named `*_test`, and explicitly opted in | `tests/db_guard.py` | `test_db_guard.py` |
 
 ## 3. PII and Data Retention
 

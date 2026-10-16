@@ -1,6 +1,6 @@
 # Architecture
 
-Status: approved design (M0). M1 implemented the foundation (app factory, config, logging, health probes, database roles); the rest is planned.
+Status: approved design (M0). Implemented so far: M1 foundation and M2 intake (steps 1 to 4 of the data flow below). The rest is planned.
 
 Source: [DESIGN.md](DESIGN.md). Decisions: [ADRs](adr/README.md).
 
@@ -135,21 +135,22 @@ lead-ops-engine/
 │   ├── migrations/
 │   ├── config/            routing.yaml, scoring.yaml, services.yaml, prices.yaml
 │   ├── src/leadops/
-│   │   ├── main.py, config.py, logging_config.py, errors.py
-│   │   ├── api/           routes/, deps.py, auth.py, middleware.py, rate_limit.py
+│   │   ├── main.py, config.py, logging_config.py, errors.py, ids.py, pii.py, cli.py
+│   │   ├── api/           routes/, deps.py, auth.py, middleware.py, body_limit.py, client_ip.py, rate_limit.py, request_body.py
 │   │   ├── domain/        lifecycle.py, scoring.py, routing.py, policies.py, normalization.py  (no I/O)
 │   │   ├── services/      intake.py, analysis.py, drafting.py, approvals.py, delivery.py, followups.py
 │   │   ├── ai/            provider.py, anthropic_provider.py, schemas.py, evidence.py, tools.py, pricing.py
 │   │   │   └── prompts/   analyze_lead/v1.md, draft_reply/v1.md
 │   │   ├── jobs/          queue.py, worker.py, handlers.py, retry.py
+│   │   ├── security/      api_keys.py
 │   │   ├── integrations/  signing.py, n8n.py
-│   │   ├── db/            models.py, session.py, repositories/
+│   │   ├── db/            base.py, models.py, session.py, schema.py, repositories.py
 │   │   └── schemas/       API request and response models
 │   └── tests/             unit/, integration/, fakes.py, conftest.py
 ├── frontend/              Vite + React + TypeScript, src/api/schema.d.ts (generated)
 ├── evals/                 datasets/, LABELING_GUIDE.md, run.py, metrics.py, judge.py, results/
 ├── n8n/                   workflows/*.json (credential-free), README.md
-├── infra/                 docker-compose.yml, postgres/init/01-roles.sql, docker-compose.prod.yml, Caddyfile, backup.sh
+├── infra/                 docker-compose.yml, postgres/init/ (roles, leadops_test), docker-compose.prod.yml, Caddyfile, backup.sh
 └── docs/                  DESIGN.md, architecture.md, state-machine.md, security.md, adr/
 ```
 

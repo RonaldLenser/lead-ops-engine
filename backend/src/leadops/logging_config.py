@@ -10,6 +10,9 @@ Two sources of logs are unified here:
   library `logging` module. Their records are routed through the same
   processors, so production output is JSON from every source.
 
+Every string value passes through leadops.pii masking (emails, phone numbers,
+API keys) before it is written.
+
 Tracebacks are rendered WITHOUT local variables. structlog can include each
 frame's locals, which would copy request data, personal data, or secrets into
 the logs.
@@ -25,6 +28,8 @@ import structlog
 from structlog.tracebacks import ExceptionDictTransformer
 from structlog.typing import Processor
 
+from leadops.pii import mask_pii_processor
+
 # Library loggers that install their own handlers. We remove those handlers and
 # let records propagate to the root handler configured below.
 _LIBRARY_LOGGERS = ("uvicorn", "uvicorn.error", "alembic", "sqlalchemy")
@@ -34,9 +39,13 @@ def _renderer(json_logs: bool) -> list[Processor]:
     if json_logs:
         return [
             structlog.processors.ExceptionRenderer(ExceptionDictTransformer(show_locals=False)),
+            # After the exception renderer, so exception messages are masked too.
+            mask_pii_processor,
             structlog.processors.JSONRenderer(),
         ]
-    return [structlog.dev.ConsoleRenderer()]
+    # Local console: fields are masked; ConsoleRenderer prints tracebacks itself,
+    # so exception text is not masked in local development output.
+    return [mask_pii_processor, structlog.dev.ConsoleRenderer()]
 
 
 def configure_logging(level: str, json_logs: bool) -> None:

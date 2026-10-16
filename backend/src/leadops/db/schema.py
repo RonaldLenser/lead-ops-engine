@@ -18,7 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-SCHEMA_REVISION = "0001"
+SCHEMA_REVISION = "0002"
 
 MigrationState = Literal["current", "outdated", "unknown"]
 
