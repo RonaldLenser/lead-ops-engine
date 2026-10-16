@@ -1,6 +1,6 @@
 # Architecture
 
-Status: approved design (M0). Not implemented yet.
+Status: approved design (M0). M1 implemented the foundation (app factory, config, logging, health probes, database roles); the rest is planned.
 
 Source: [DESIGN.md](DESIGN.md). Decisions: [ADRs](adr/README.md).
 
@@ -131,7 +131,7 @@ Created milestone by milestone. A folder appears only when real code goes in it.
 ```text
 lead-ops-engine/
 ├── backend/
-│   ├── pyproject.toml, uv.lock, alembic.ini, Dockerfile
+│   ├── pyproject.toml, uv.lock, alembic.ini, Dockerfile, .env.example
 │   ├── migrations/
 │   ├── config/            routing.yaml, scoring.yaml, services.yaml, prices.yaml
 │   ├── src/leadops/
@@ -149,7 +149,7 @@ lead-ops-engine/
 ├── frontend/              Vite + React + TypeScript, src/api/schema.d.ts (generated)
 ├── evals/                 datasets/, LABELING_GUIDE.md, run.py, metrics.py, judge.py, results/
 ├── n8n/                   workflows/*.json (credential-free), README.md
-├── infra/                 docker-compose.yml, docker-compose.prod.yml, Caddyfile, backup.sh
+├── infra/                 docker-compose.yml, postgres/init/01-roles.sql, docker-compose.prod.yml, Caddyfile, backup.sh
 └── docs/                  DESIGN.md, architecture.md, state-machine.md, security.md, adr/
 ```
 

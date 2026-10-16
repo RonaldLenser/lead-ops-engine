@@ -4,8 +4,8 @@
 
 Lead Ops Engine takes inbound business leads from intake to a human-approved first reply: an LLM reads and drafts, deterministic code makes every decision, and nothing is sent without a reviewer's approval.
 
-> **Status: Phase 0. Architecture approved, no application code yet.**
-> Everything below describes the planned v1. Nothing here is implemented until the roadmap marks it done.
+> **Status: M1 (foundation) complete.** The service runs, connects to PostgreSQL, checks its own readiness, and is covered by CI.
+> Lead intake, AI analysis, approvals, and delivery are **not built yet**. Everything outside the "Done" rows of the roadmap describes the planned v1.
 
 ---
 
@@ -48,6 +48,49 @@ Details: [Design](docs/DESIGN.md) · [Architecture](docs/architecture.md) · [St
 
 ---
 
+## What Exists Today (M1)
+
+- FastAPI app factory with typed settings that refuse to start on missing or unsafe configuration
+- Structured JSON logging (app and library logs) with a request ID on every line and response
+- `/healthz` (liveness) and `/readyz` (database reachable and migrations current)
+- Two PostgreSQL roles: the app can read and write rows but cannot change the schema; migrations run as a separate owner role
+- Alembic baseline migration, Dockerfile (non-root), Docker Compose stack
+- CI: ruff, mypy (strict), pytest against a real PostgreSQL, gitleaks, Docker build and Compose smoke test
+
+---
+
+## Run It Locally
+
+Requirements: Docker, and [uv](https://docs.astral.sh/uv/) for running tests outside Docker.
+
+```bash
+# Whole stack: database, migrations, API on http://localhost:8000
+docker compose -f infra/docker-compose.yml up --build
+
+curl http://localhost:8000/healthz
+curl http://localhost:8000/readyz
+```
+
+Tests (unit tests need nothing; integration tests use the Compose database):
+
+```bash
+docker compose -f infra/docker-compose.yml up -d db
+cd backend
+cp .env.example .env
+uv sync
+uv run alembic upgrade head
+uv run pytest
+uv run ruff check . && uv run ruff format --check . && uv run mypy src tests migrations
+```
+
+Git hooks (gitleaks, ruff, whitespace checks), from the repository root:
+
+```bash
+uv run --project backend pre-commit install
+```
+
+---
+
 ## Planned Stack
 
 | Layer | Choice |
@@ -68,7 +111,7 @@ Details: [Design](docs/DESIGN.md) · [Architecture](docs/architecture.md) · [St
 | Milestone | Scope | Status |
 |---|---|---|
 | M0 | Architecture, decision records, design docs | Done |
-| M1 | Project foundation, CI, Docker, health checks | Planned |
+| M1 | Project foundation, CI, Docker, health checks, database roles | Done |
 | M2 | Data model, lead intake, webhook signatures, idempotency | Planned |
 | M3 | Job queue, worker, retries, lifecycle state machine | Planned |
 | M4 | LLM extraction, evidence checks, scoring, routing, AI telemetry | Planned |
@@ -98,4 +141,4 @@ Details: [Design](docs/DESIGN.md) · [Architecture](docs/architecture.md) · [St
 
 ## License
 
-To be added in M1 (MIT).
+[MIT](LICENSE)

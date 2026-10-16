@@ -4,10 +4,10 @@ Public title: Lead Ops Engine: AI lead qualification with human approval
 
 | | |
 |---|---|
-| Status | Architecture approved (M0). Nothing below is implemented yet. |
+| Status | M1 (foundation) done. Everything beyond the M1 row in section 17 is still planned. |
 | Owner | Ron Lenser |
 | Approved | 2026-10-15 |
-| Last updated | 2026-10-15 |
+| Last updated | 2026-10-15 (M0 decisions recorded) |
 | Related | [architecture.md](architecture.md), [state-machine.md](state-machine.md), [security.md](security.md), [ADRs](adr/README.md) |
 
 This document is the source of truth for the v1 design. The three companion docs expand sections of it and must not contradict it. Every feature described here is **planned** unless the milestone table in section 17 marks it done.
@@ -118,8 +118,9 @@ users 1───* sessions            api_keys (scoped, hashed)
 | `lead_analyses` | id, lead_id, ai_call_id, schema_version, extracted_jsonb, evidence_ok, missing_fields[], created_at | Re-analysis adds a row. |
 | `workflow_runs` | id, lead_id, trigger, status, started_at, finished_at, error | The workflow execution ID in every log line. |
 | `jobs` | id, workflow_run_id, type, payload_jsonb, status (queued/running/succeeded/failed/dead), attempts, max_attempts, run_at, locked_until, last_error, dedupe_key UNIQUE | The queue. `dedupe_key` blocks duplicate enqueue. |
-| `ai_calls` | id, workflow_run_id, lead_id, purpose, provider, model, prompt_name, prompt_version, prompt_hash, input_tokens, output_tokens, cost_usd (numeric), price_table_version, latency_ms, attempt, outcome (ok/invalid_output/refused/timeout/error), validation_errors_jsonb, raw_output (nullable), raw_output_purged_at, request_id | AI telemetry. `raw_output` is kept only for `invalid_output` calls, pending open question 1, and follows the raw-data retention policy. |
-| `messages` | id, lead_id, kind (first_touch/info_request/follow_up), channel (email), subject, body, status, ai_call_id, policy_violations_jsonb, dispatch_attempt, dispatched_at, provider_message_id, sent_at | Status values in [state-machine.md](state-machine.md). |
+| `ai_calls` | id, workflow_run_id, lead_id, purpose, provider, model, prompt_name, prompt_version, prompt_hash, input_tokens, output_tokens, cost_usd (numeric), price_table_version, latency_ms, attempt, outcome (ok/invalid_output/refused/timeout/error), validation_errors_jsonb, raw_output (nullable), raw_output_purged_at, request_id | AI telemetry. `raw_output` is kept only for `invalid_output` calls and follows the raw-data retention policy (section 10). |
+| `messages` | id, lead_id, kind (first_touch/info_request/follow_up), channel (email), subject, body, status, ai_call_id, policy_violations_jsonb, dispatch_attempt (current attempt number), sent_at | Status values in [state-machine.md](state-machine.md). |
+| `delivery_attempts` | id, message_id, attempt_no, created_by_actor_type, created_by_actor_id, status (queued/dispatching/sent/delivery_unknown/failed/cancelled), dispatched_at, provider_message_id, outcome_at, resolution (confirmed_sent/resend/abandon, nullable), resolved_by, resolved_at, resolution_reason | UNIQUE(message_id, attempt_no). One row per dispatch attempt. Attempt 1 is created by approval; every later attempt only by an explicit human `resend`. |
 | `approvals` | id, message_id, reviewer_id, decision (approved/rejected), edited_body, edit_distance, reason, decided_at | |
 | `follow_ups` | id, lead_id, step, due_at, status (scheduled/paused/drafted/sent/skipped/cancelled), message_id | `skipped` = reviewer rejected that step's message. |
 | `audit_events` | id, lead_id (nullable), actor_type (system/user/api_key/ai), actor_id, event_type, data_jsonb, request_id, workflow_run_id, created_at | Append-only. Lead timeline and security log. |
@@ -133,7 +134,7 @@ All timestamps are `timestamptz` in UTC. Business-hours math uses `America/New_Y
 
 ## 6. API (v1, planned)
 
-All under `/v1`. One error shape: `{"error": {"code", "message", "request_id"}}`.
+All under `/v1`, except the health probes, which are unversioned infrastructure endpoints at the root. One error shape: `{"error": {"code", "message", "request_id"}}`.
 
 | Method | Path | Auth / role | Purpose |
 |---|---|---|---|
@@ -148,7 +149,7 @@ All under `/v1`. One error shape: `{"error": {"code", "message", "request_id"}}`
 | GET | `/approvals?status=pending` | reviewer+ | Approval queue |
 | POST | `/messages/{id}/approve` | reviewer+ | Optional `edited_body`. Edits re-run policy checks. |
 | POST | `/messages/{id}/reject` | reviewer+ | `reason`, `redraft: bool` (max 2; `422` for follow-ups, which are templates) |
-| POST | `/messages/{id}/resolve-delivery` | reviewer+ | For `delivery_unknown`: `confirmed_sent` / `resend` / `abandon`. For `failed`: `resend` / `abandon`. Reason required. |
+| POST | `/messages/{id}/resolve-delivery` | reviewer+ | For `delivery_unknown`: `confirmed_sent` / `resend` / `abandon`. For `failed`: `resend` / `abandon`. Reason required. See section 9.1. |
 | POST | `/messages/{id}/delivery` | API key `delivery:callback` + HMAC | n8n reports `sent` / `failed` for a specific `dispatch_attempt`. Idempotent. |
 | GET | `/workflow-runs/{id}` | viewer+ | Jobs and AI calls for a run |
 | GET | `/metrics/summary` | viewer+ | Aggregates from telemetry tables |
@@ -156,7 +157,7 @@ All under `/v1`. One error shape: `{"error": {"code", "message", "request_id"}}`
 | POST | `/jobs/{id}/retry` | admin | Requeue a dead job. Not allowed for delivery jobs (see section 9). |
 | POST | `/auth/login`, `/auth/logout`; GET `/auth/me` | | Session auth |
 | POST, DELETE | `/api-keys` | admin | Create (shown once), revoke |
-| GET | `/healthz`, `/readyz` | public | Liveness, DB readiness |
+| GET | `/healthz`, `/readyz` (root, not `/v1`) | public | Liveness; readiness = database reachable and migrations at the expected revision |
 
 **Endpoint rules:**
 
@@ -229,7 +230,7 @@ If the eval shows the static catalog works just as well in the prompt, ADR-0006 
 - No em dashes; word limit
 - Greeting name matches the extracted first name
 
-A failing AI draft is regenerated once with the violations listed. If it still fails, the violations are shown on the approval card. A reviewer edit that fails is rejected with `422` and the list of violations.
+A failing AI draft is regenerated once with the violations listed. If it still fails, the violations are shown on the approval card. A reviewer edit that fails is rejected with `422` and the list of violations. No role, including `admin`, can override a policy failure (section 19, decision 2).
 
 **Prompts** live in `prompts/{name}/v{n}.md`. Every `ai_calls` row stores prompt name, version, and hash.
 
@@ -256,6 +257,30 @@ If a delivery job exhausts its safe retries (the request never left), the messag
 
 A delivery job reclaimed after a worker crash finds the message already `dispatching` and moves it to `delivery_unknown`. It never re-sends.
 
+### 9.1 Resolving Ambiguous or Failed Delivery
+
+`POST /v1/messages/{id}/resolve-delivery` is the only way out of `delivery_unknown` and `failed` (apart from a confirmed late callback).
+
+Request body:
+
+| Field | Required | Notes |
+|---|---|---|
+| `action` | yes | `confirmed_sent`, `resend`, or `abandon` (`confirmed_sent` only from `delivery_unknown`) |
+| `reason` | yes | Free text, stored |
+| `attempt_no` | yes | The attempt being resolved. Must equal the message's current attempt, or the request is rejected with `409`. Prevents acting on a stale screen. |
+| `confirm_resend` | only for `resend` | Must be `true`. A resend is never implied by any other action or default. |
+
+Every resolution records, in one transaction, on the `delivery_attempts` row and in an `audit_events` row (`event_type = delivery.resolved`):
+
+- reviewer (`resolved_by`, from the session)
+- action taken
+- reason
+- timestamp
+- original delivery state (attempt and message status before the action)
+- resulting message status and lead status
+
+`resend` never re-dispatches the old attempt. It creates a **new** `delivery_attempts` row (`attempt_no + 1`, `created_by` = the reviewer) and a new delivery job keyed on that attempt. The old attempt keeps its record. A resend is therefore always an explicit, attributable human action with its own audit trail.
+
 **n8n requirement:** the delivery workflow must have "Retry On Fail" turned off on the send node, so n8n cannot create duplicates behind the system's back.
 
 Short form for the README and interviews: **duplicate-outbound protection, not exactly-once delivery.** Details: [ADR-0005](adr/0005-outbound-delivery-ambiguity.md).
@@ -269,7 +294,7 @@ Leads are personal data: names, emails, phone numbers, and free text.
 | Data | Contains PII | Policy |
 |---|---|---|
 | Repository, eval datasets, demo seed data | Must not | **Synthetic data only.** No real lead, client, or prospect data is ever committed or loaded into the public demo. |
-| `ai_calls.raw_output` (only if open question 1 is approved) | Yes | Same retention and purge as raw inbound payloads. |
+| `ai_calls.raw_output` | Yes (model output can echo lead text) | Stored only for `invalid_output` calls, for debugging. Linked to its `ai_call_id`, `workflow_run_id`, and `lead_id`. Never committed to the repository, never written in full to application logs (logs carry only length and a hash). Purged after `RAW_EVENT_RETENTION_DAYS`: content set to NULL and `raw_output_purged_at` stamped. Telemetry stays: outcome, validation errors, model, prompt version, latency, tokens, cost. |
 | `inbound_events.payload_jsonb` | Yes (raw, unvalidated) | Kept for debugging and replay. Production deployments purge it after `RAW_EVENT_RETENTION_DAYS` (default `30`). Purge sets the payload to NULL and stamps `payload_purged_at`; source, event ID, and `payload_sha256` stay so idempotency keeps working. |
 | `leads`, `contacts`, `messages`, `lead_analyses` | Yes | Operational business records. No automatic deletion in v1. The operator's own retention policy applies. |
 | Logs | Must not | Email and phone masked by a log processor. Message bodies are not logged. |
@@ -342,6 +367,7 @@ One VPS (about 2 vCPU, 4 GB RAM) running Docker Compose: `caddy`, `api`, `worker
 | `WEBHOOK_SECRETS` | Per-source inbound HMAC secrets | none |
 | `RAW_EVENT_RETENTION_DAYS` | Raw payload purge age | `30` |
 | `SESSION_TTL_HOURS` | Session lifetime | set in M6 |
+| `FOLLOW_UP_BUSINESS_DAYS` | Business days after first contact for each follow-up step | `2,5` |
 
 No secret has a default. The app refuses to start if a required secret is missing.
 
@@ -354,7 +380,7 @@ Each milestone ships as one or two PRs with CI green, tests, and docs updated.
 | M | Deliverable | Status |
 |---|---|---|
 | M0 | Design, ADRs, architecture/state-machine/security docs, early README | Done (docs only) |
-| M1 | Foundation: uv project, app factory, config, structlog with request IDs, health/ready, Compose (api + postgres), Alembic baseline, CI (ruff, mypy, pytest + Postgres, gitleaks), Dockerfile, LICENSE, `.gitignore`, `.env.example` | Planned |
+| M1 | Foundation: uv project, app factory, typed config with startup validation, structured JSON logging with request IDs, `/healthz` and `/readyz`, separate least-privilege database roles (app vs migrator), Compose (db + migrate + api), Alembic baseline, CI (ruff, mypy, pytest + Postgres, gitleaks, Docker/Compose smoke), Dockerfile, pre-commit, LICENSE, `.gitignore`, `.env.example` | Done |
 | M2 | Data model and intake: core tables, normalization, contact dedupe, `/leads` and signed webhook, idempotency, API-key auth, audit events, transactional enqueue, concurrency test | Planned |
 | M3 | Job runner: queue, worker, backoff with jitter, dead letter, workflow runs, lifecycle state machine | Planned |
 | M4 | AI analysis: provider Protocol, Claude provider, versioned prompts, extraction schema, validation and repair, evidence check, scoring, routing, telemetry, budget guard | Planned |
@@ -375,8 +401,13 @@ In priority order: earned autonomy (auto-send for one category behind eval thres
 
 ## 19. Open Questions
 
-| # | Question | Default if no answer |
+None open. Resolved at M0 approval (2026-10-15):
+
+| # | Question | Decision |
 |---|---|---|
-| 1 | Store raw LLM output for `invalid_output` calls, for debugging? | Yes, in `ai_calls.raw_output`, purged on the same schedule as raw events (`RAW_EVENT_RETENTION_DAYS`). Decide by M4. |
-| 2 | Can an admin override a policy-check failure on a reviewer edit? | No override in v1. |
-| 3 | Follow-up cadence (days between steps, number of steps) | 2 steps, at 2 and 5 business days. Decide in M7. |
+| 1 | Store raw LLM output for `invalid_output` calls? | **Yes, temporarily.** `ai_calls.raw_output`, same retention and purge as raw inbound events. Rules in section 10. |
+| 2 | Can an admin override a policy-check failure? | **No.** No role can bypass deterministic policy checks. If a legitimate business need conflicts with a policy, the versioned policy config is changed deliberately, in a PR, with tests. |
+| 3 | Follow-up cadence | **2 and 5 business days**, configurable via `FOLLOW_UP_BUSINESS_DAYS` (not hardcoded). Business rules validated in M7. |
+| 4 | Resolve-delivery endpoint and `delivery_failed` reason | **Approved.** Section 9.1. |
+| 5 | Read endpoints before M6 | **Wait for M6.** No temporary or unauthenticated read routes. Before M6, behavior is verified with automated tests, repository/service-layer tests, and SQL inspection in development. |
+| 6 | License | **MIT**, same as Grounded. |

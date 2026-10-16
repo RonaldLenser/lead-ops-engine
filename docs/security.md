@@ -42,6 +42,18 @@ Source: [DESIGN.md](DESIGN.md) sections 9, 10, 11.
 
 ---
 
+### Implemented so far (M1)
+
+| Control | Where | Verified by |
+|---|---|---|
+| Required settings, no secret defaults, unsafe production database settings refused at startup (dev passwords, no password, superuser, shared app/migrator role, SQL echo) | `backend/src/leadops/config.py` | `tests/unit/test_config.py` |
+| Connection strings are `SecretStr` and never echoed in validation errors | `config.py` | `test_config.py` |
+| App database role cannot create, alter, or drop schema objects; migrations use a separate owner role | `infra/postgres/init/01-roles.sql` | `tests/integration/test_database_roles.py` |
+| Tracebacks logged without local variables; SQL statements never logged by default; validation errors never echo submitted values | `logging_config.py`, `api/errors.py` | `test_logging.py`, `test_errors.py` |
+| Client request IDs accepted only if short and safe | `api/middleware.py` | `test_request_context.py` |
+| Secret scanning | `.pre-commit-config.yaml`, CI `secrets` job | gitleaks |
+| Container runs as a non-root user | `backend/Dockerfile` | CI Docker job |
+
 ## 3. PII and Data Retention
 
 ### Synthetic data only
@@ -58,7 +70,7 @@ Because it is raw, it can contain any PII the sender included, including fields 
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `RAW_EVENT_RETENTION_DAYS` | `30` | Age after which `payload_jsonb` is set to NULL |
+| `RAW_EVENT_RETENTION_DAYS` | `30` | Age after which `inbound_events.payload_jsonb` and `ai_calls.raw_output` are set to NULL |
 
 What a purge does:
 
@@ -76,7 +88,7 @@ Implementation status: the setting is defined in config in M2. **The scheduled p
 | n8n notifications | IDs and dashboard links only. |
 | n8n workflow exports in the repo | Credentials and real addresses removed before commit. |
 | Database backups | Contain PII. Retention is set by the operator and documented in the runbook (M9). |
-| `ai_calls.raw_output` (invalid responses only) | Pending DESIGN.md open question 1. If approved: same retention and M9 purge as raw inbound payloads. |
+| `ai_calls.raw_output` (invalid responses only) | Treated as PII. Never committed, never logged in full (length and hash only), linked to `ai_call_id` and `workflow_run_id`, purged after `RAW_EVENT_RETENTION_DAYS` by the M9 purge job. Telemetry (outcome, validation errors, model, prompt version, latency, tokens, cost) remains after purge. |
 
 ### Known v1 limitations
 
@@ -115,7 +127,11 @@ In v1, **every outbound message, AI-drafted or templated, requires a reviewer's 
 
 ---
 
-## 6. Roles
+## 6. No Policy Override
+
+No role, including `admin`, can bypass a deterministic policy check on a message. If a legitimate business requirement conflicts with a policy rule, the versioned policy configuration is changed deliberately in a reviewed PR with tests, never per message.
+
+## 7. Roles
 
 | Role | Can |
 |---|---|
@@ -129,6 +145,6 @@ Machine clients use API keys with scopes, not roles.
 
 ---
 
-## 7. Reporting
+## 8. Reporting
 
 This is a portfolio project. Security issues can be reported by opening a GitHub issue without sensitive details, or by contacting the owner through the GitHub profile.

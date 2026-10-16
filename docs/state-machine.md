@@ -120,6 +120,8 @@ Reprocessing is not allowed once any message has been dispatched for the lead.
 | `delivery_unknown` | APPROVED or CONTACTED | resolve-delivery `confirmed_sent` / `resend` / `abandon` | CONTACTED / `resume_status` plus a new dispatch attempt / first-touch: CLOSED_LOST, follow-up: message `cancelled`, lead back to CONTACTED |
 | `delivery_failed` | APPROVED or CONTACTED | resolve-delivery `resend` / `abandon` | `resume_status` plus a new dispatch attempt / same as above |
 
+Every resolve-delivery action records reviewer, action, reason, timestamp, original delivery state, and resulting message and lead status, and `resend` always creates a new delivery attempt (DESIGN.md section 9.1).
+
 A late signed `sent` callback for the current `dispatch_attempt` of a message in `delivery_unknown` resolves the hold to CONTACTED with no human action. That is confirmed evidence, not a retry. A callback for an older attempt, or for a `cancelled` message, changes no state; it is audited and shown as a warning on the timeline.
 
 ---

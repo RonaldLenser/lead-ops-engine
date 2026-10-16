@@ -1,0 +1,8 @@
+# Normalize line endings to LF in the repository and in checkouts.
+# Without this, Git on Windows can check out shell, SQL, and Docker files with
+# CRLF endings, which break inside Linux containers.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.gif binary

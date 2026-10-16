@@ -1,0 +1,69 @@
+[project]
+name = "lead-ops-engine"
+version = "0.1.0"
+description = "AI lead qualification with human approval: FastAPI, PostgreSQL, Claude."
+license = "MIT"
+authors = [{ name = "Ron Lenser" }]
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.20.0",
+    "asyncpg>=0.32.0",
+    "fastapi>=0.143.2",
+    "pydantic-settings>=2.16.0",
+    "sqlalchemy[asyncio]>=2.1.4",
+    "structlog>=26.1.0",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/leadops"]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.13.1",
+    "mypy>=2.4.0",
+    "pre-commit>=4.7.0",
+    "pytest>=9.1.1",
+    "ruff>=0.17.1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes (unused imports, undefined names)
+    "I",   # isort (import order)
+    "B",   # bugbear (likely bugs)
+    "UP",  # pyupgrade (modern syntax)
+    "SIM", # simplify
+    "N",   # naming conventions
+    "S",   # bandit (security)
+    "ASYNC", # blocking calls inside async code
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106"]  # assert is how pytest works; fake test credentials are fine
+"migrations/**" = ["N999"]              # revision filenames start with digits
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+explicit_package_bases = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+filterwarnings = ["error"]  # a new deprecation warning fails the build instead of scrolling past
+markers = [
+    "integration: needs a real PostgreSQL database (DATABASE_URL / MIGRATION_DATABASE_URL)",
+]
