@@ -4,7 +4,7 @@ Public title: Lead Ops Engine: AI lead qualification with human approval
 
 | | |
 |---|---|
-| Status | M1 (foundation) done. Everything beyond the M1 row in section 17 is still planned. |
+| Status | M2 (data model and intake) done. Everything beyond the M2 row in section 17 is still planned. |
 | Owner | Ron Lenser |
 | Approved | 2026-10-15 |
 | Last updated | 2026-10-15 (M0 decisions recorded) |
@@ -112,23 +112,35 @@ users 1───* sessions            api_keys (scoped, hashed)
 
 | Table | Key columns | Notes |
 |---|---|---|
-| `inbound_events` | id, source, external_event_id, idempotency_key, payload_jsonb (nullable), payload_sha256, signature_valid, received_at, payload_purged_at, lead_id, status | UNIQUE(source, external_event_id). Payload is purged after `RAW_EVENT_RETENTION_DAYS`; the row and hash stay so dedupe keeps working. |
-| `contacts` | id, email_normalized UNIQUE, name, phone_e164, company, created_at | Business dedupe point. |
-| `leads` | id (UUIDv7), contact_id, source, raw_message, status, review_reason, resume_status, score, score_band, score_version, service_type, urgency, current_analysis_id, redraft_count, created_at, updated_at, version | `status` changes only through the lifecycle module. `version` for optimistic locking. |
+| `inbound_events` | id, kind (direct/webhook), source, external_event_id, idempotency_key, api_key_id, payload_jsonb (nullable), payload_sha256, request_id, received_at, payload_purged_at | **Built in M2.** UNIQUE(source, external_event_id); partial UNIQUE(api_key_id, idempotency_key). Only authenticated, schema-valid requests are stored. Payload purged after `RAW_EVENT_RETENTION_DAYS`; the row and hash stay so dedupe keeps working. |
+| `contacts` | id, email_normalized, phone_e164, name, created_at, updated_at | **Built in M2.** Business dedupe point: UNIQUE(email_normalized); phone-only contacts UNIQUE on phone_e164 (partial index); at least one identifier required. |
+| `leads` | id (UUIDv7), inbound_event_id, contact_id, source, status, raw_message, submitted_contact, contact_issues, version, created_at, updated_at; later milestones add review_reason, resume_status, score, score_band, score_version, service_type, urgency, current_analysis_id, redraft_count | **Intake columns built in M2.** UNIQUE(inbound_event_id). CHECK on the 14 designed statuses. `status` changes only through the lifecycle module (M3). `version` for optimistic locking. |
 | `lead_analyses` | id, lead_id, ai_call_id, schema_version, extracted_jsonb, evidence_ok, missing_fields[], created_at | Re-analysis adds a row. |
-| `workflow_runs` | id, lead_id, trigger, status, started_at, finished_at, error | The workflow execution ID in every log line. |
-| `jobs` | id, workflow_run_id, type, payload_jsonb, status (queued/running/succeeded/failed/dead), attempts, max_attempts, run_at, locked_until, last_error, dedupe_key UNIQUE | The queue. `dedupe_key` blocks duplicate enqueue. |
+| `workflow_runs` | id, lead_id, trigger, status, created_at, started_at, finished_at, error | **Built in M2.** The workflow execution ID in every log line. |
+| `jobs` | id, workflow_run_id, type, payload, status (queued/running/succeeded/failed/dead), attempts, max_attempts, run_at, locked_until, last_error, dedupe_key UNIQUE, created_at, updated_at | **Built in M2 (persistence only; executed from M3).** `dedupe_key` blocks duplicate enqueue. |
 | `ai_calls` | id, workflow_run_id, lead_id, purpose, provider, model, prompt_name, prompt_version, prompt_hash, input_tokens, output_tokens, cost_usd (numeric), price_table_version, latency_ms, attempt, outcome (ok/invalid_output/refused/timeout/error), validation_errors_jsonb, raw_output (nullable), raw_output_purged_at, request_id | AI telemetry. `raw_output` is kept only for `invalid_output` calls and follows the raw-data retention policy (section 10). |
 | `messages` | id, lead_id, kind (first_touch/info_request/follow_up), channel (email), subject, body, status, ai_call_id, policy_violations_jsonb, dispatch_attempt (current attempt number), sent_at | Status values in [state-machine.md](state-machine.md). |
 | `delivery_attempts` | id, message_id, attempt_no, created_by_actor_type, created_by_actor_id, status (queued/dispatching/sent/delivery_unknown/failed/cancelled), dispatched_at, provider_message_id, outcome_at, resolution (confirmed_sent/resend/abandon, nullable), resolved_by, resolved_at, resolution_reason | UNIQUE(message_id, attempt_no). One row per dispatch attempt. Attempt 1 is created by approval; every later attempt only by an explicit human `resend`. |
 | `approvals` | id, message_id, reviewer_id, decision (approved/rejected), edited_body, edit_distance, reason, decided_at | |
 | `follow_ups` | id, lead_id, step, due_at, status (scheduled/paused/drafted/sent/skipped/cancelled), message_id | `skipped` = reviewer rejected that step's message. |
-| `audit_events` | id, lead_id (nullable), actor_type (system/user/api_key/ai), actor_id, event_type, data_jsonb, request_id, workflow_run_id, created_at | Append-only. Lead timeline and security log. |
+| `audit_events` | id, lead_id (nullable), workflow_run_id, actor_type (system/user/api_key/webhook/ai), actor_id, event_type, data, request_id, created_at | **Built in M2.** Append-only: the migration revokes UPDATE, DELETE, and TRUNCATE from the app role. Lead timeline and security log. |
 | `users` | id, email, password_hash (argon2id), role (admin/reviewer/viewer), is_active | |
 | `sessions` | id, user_id, token_hash, expires_at, revoked_at | |
-| `api_keys` | id, name, key_prefix, key_hash, scopes[], last_used_at, revoked_at | |
+| `api_keys` | id, name, prefix, key_sha256, scopes[], created_at, last_used_at, revoked_at | **Built in M2.** Format and hashing: [ADR-0012](adr/0012-api-key-format-and-hashing.md). |
 
-All timestamps are `timestamptz` in UTC. Business-hours math uses `America/New_York`.
+All timestamps are `timestamptz` in UTC. Business-hours math uses `America/New_York`. Primary keys are UUIDv7 generated in Python (`leadops/ids.py`).
+
+Intake request and response contract, signing, and idempotency rules: [docs/api/intake.md](api/intake.md).
+
+**Changes from the M0 data model, made in M2:**
+
+- `inbound_events.signature_valid` dropped: requests that fail authentication are never stored, so the column would always be true.
+- `inbound_events.status` dropped: an event row exists only if its lead was created in the same transaction.
+- The event-to-lead link moved to `leads.inbound_event_id` (UNIQUE, NOT NULL) instead of `inbound_events.lead_id`, so one-lead-per-event is enforced by the database and no row is updated after insert.
+- `inbound_events.kind` and `api_key_id` added: idempotency keys are scoped per API key.
+- `contacts.company` deferred until extraction (M4) produces it. Phone-only contacts are supported.
+- `leads.submitted_contact` and `contact_issues` added: unusable contact details are kept and flagged, never a reason to reject a lead.
+- `audit_events.actor_type` gains `webhook`.
 
 ---
 
@@ -353,7 +365,7 @@ One VPS (about 2 vCPU, 4 GB RAM) running Docker Compose: `caddy`, `api`, `worker
 
 ---
 
-## 16. Configuration (planned)
+## 16. Configuration
 
 | Variable | Purpose | Default |
 |---|---|---|
@@ -364,7 +376,12 @@ One VPS (about 2 vCPU, 4 GB RAM) running Docker Compose: `caddy`, `api`, `worker
 | `DELIVERY_MODE` | `sink` or `n8n` | `sink` |
 | `DELIVERY_CALLBACK_TIMEOUT_MINUTES` | After this, no callback means `delivery_unknown` | set in M7 |
 | `N8N_DISPATCH_URL`, `N8N_SIGNING_SECRET` | Outbound to n8n | none |
-| `WEBHOOK_SECRETS` | Per-source inbound HMAC secrets | none |
+| `WEBHOOK_SECRETS` | JSON: source name to a list of HMAC secrets (32+ chars; several = rotation) | `{}` |
+| `WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS` | Allowed clock difference for signed webhooks | `300` |
+| `TRUSTED_PROXY_CIDRS` | JSON list of proxy networks allowed to set `X-Forwarded-For` | `[]` (trust none) |
+| `MAX_REQUEST_BODY_BYTES` | Request body cap | `32768` |
+| `DEFAULT_PHONE_REGION` | Region for phone numbers without a country code | `US` |
+| `RATE_LIMIT_INTAKE_PER_IP`, `RATE_LIMIT_INTAKE_PER_API_KEY`, `RATE_LIMIT_WEBHOOK_PER_SOURCE` | Requests per minute, per process | `60`, `120`, `120` |
 | `RAW_EVENT_RETENTION_DAYS` | Raw payload purge age | `30` |
 | `SESSION_TTL_HOURS` | Session lifetime | set in M6 |
 | `FOLLOW_UP_BUSINESS_DAYS` | Business days after first contact for each follow-up step | `2,5` |
@@ -381,7 +398,7 @@ Each milestone ships as one or two PRs with CI green, tests, and docs updated.
 |---|---|---|
 | M0 | Design, ADRs, architecture/state-machine/security docs, early README | Done (docs only) |
 | M1 | Foundation: uv project, app factory, typed config with startup validation, structured JSON logging with request IDs, `/healthz` and `/readyz`, separate least-privilege database roles (app vs migrator), Compose (db + migrate + api), Alembic baseline, CI (ruff, mypy, pytest + Postgres, gitleaks, Docker/Compose smoke), Dockerfile, pre-commit, LICENSE, `.gitignore`, `.env.example` | Done |
-| M2 | Data model and intake: core tables, normalization, contact dedupe, `/leads` and signed webhook, idempotency, API-key auth, audit events, transactional enqueue, concurrency test | Planned |
+| M2 | Data model and intake: migration 0002, normalization, contact dedupe, `/v1/leads` and signed webhook, idempotency, API keys + CLI, body limit, rate limits, trusted-proxy client IP, PII log masking, audit events, transactional job persistence, destructive-test DB guard, concurrency tests | Done |
 | M3 | Job runner: queue, worker, backoff with jitter, dead letter, workflow runs, lifecycle state machine | Planned |
 | M4 | AI analysis: provider Protocol, Claude provider, versioned prompts, extraction schema, validation and repair, evidence check, scoring, routing, telemetry, budget guard | Planned |
 | M5 | Eval v1: labeled dataset, harness, metrics, committed results | Planned |

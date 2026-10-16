@@ -155,3 +155,57 @@ def test_dev_credentials_are_allowed_outside_production() -> None:
     settings = build(app_env="local", database_url=APP_URL, db_echo=True)
 
     assert settings.db_echo is True
+
+
+# ----- intake settings (M2) -----
+
+
+def test_intake_defaults() -> None:
+    settings = build(database_url=APP_URL)
+
+    assert settings.max_request_body_bytes == 32_768
+    assert settings.raw_event_retention_days == 30
+    assert settings.trusted_proxy_networks == []
+    assert settings.webhook_secrets == {}
+
+
+def test_list_and_dict_settings_parse_from_json_environment_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRUSTED_PROXY_CIDRS", '["172.18.0.0/16", "fd00::/8"]')
+    monkeypatch.setenv("WEBHOOK_SECRETS", '{"website_form": ["' + "s" * 32 + '"]}')
+
+    settings = build(database_url=APP_URL)
+
+    assert [str(net) for net in settings.trusted_proxy_networks] == ["172.18.0.0/16", "fd00::/8"]
+    assert secret(settings.webhook_secrets["website_form"][0]) == "s" * 32
+    assert "s" * 32 not in repr(settings)
+
+
+@pytest.mark.parametrize(
+    ("secrets", "message"),
+    [
+        ({"website_form": ["too-short"]}, "at least 32"),
+        ({"website_form": []}, "at least one secret"),
+        ({"Website Form": ["s" * 32]}, "source names"),
+    ],
+)
+def test_webhook_secrets_are_validated(secrets: dict[str, list[str]], message: str) -> None:
+    with pytest.raises(ValidationError, match=message):
+        build(database_url=APP_URL, webhook_secrets=secrets)
+
+
+def test_invalid_proxy_cidr_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        build(database_url=APP_URL, trusted_proxy_cidrs=["not-a-network"])
+
+
+def test_phone_region_is_validated_and_uppercased() -> None:
+    assert build(database_url=APP_URL, default_phone_region="gb").default_phone_region == "GB"
+    with pytest.raises(ValidationError, match="region code"):
+        build(database_url=APP_URL, default_phone_region="XX")
+
+
+def test_body_limit_bounds() -> None:
+    with pytest.raises(ValidationError):
+        build(database_url=APP_URL, max_request_body_bytes=10)

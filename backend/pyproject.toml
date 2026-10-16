@@ -9,11 +9,15 @@ dependencies = [
     "alembic>=1.20.0",
     "asyncpg>=0.32.0",
     "fastapi>=0.143.2",
+    "phonenumbers>=9.0.41",
     "pydantic-settings>=2.16.0",
     "sqlalchemy[asyncio]>=2.1.4",
     "structlog>=26.1.0",
     "uvicorn[standard]>=0.54.0",
 ]
+
+[project.scripts]
+leadops = "leadops.cli:main"
 
 [build-system]
 requires = ["hatchling"]

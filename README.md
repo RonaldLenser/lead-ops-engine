@@ -4,8 +4,8 @@
 
 Lead Ops Engine takes inbound business leads from intake to a human-approved first reply: an LLM reads and drafts, deterministic code makes every decision, and nothing is sent without a reviewer's approval.
 
-> **Status: M1 (foundation) complete.** The service runs, connects to PostgreSQL, checks its own readiness, and is covered by CI.
-> Lead intake, AI analysis, approvals, and delivery are **not built yet**. Everything outside the "Done" rows of the roadmap describes the planned v1.
+> **Status: M2 (data model and intake) complete.** Leads can be submitted through an authenticated, idempotent API and signed webhooks, and are stored with a queued analysis job.
+> The worker, AI analysis, approvals, and delivery are **not built yet**. Everything outside the "Done" rows of the roadmap describes the planned v1.
 
 ---
 
@@ -48,14 +48,28 @@ Details: [Design](docs/DESIGN.md) · [Architecture](docs/architecture.md) · [St
 
 ---
 
-## What Exists Today (M1)
+## What Exists Today (M1, M2)
+
+### Intake (M2)
+
+Details: [docs/api/intake.md](docs/api/intake.md)
+
+- `POST /v1/leads` with scoped API keys (`lok_...`, stored as SHA-256 only, created and revoked by CLI) and a required `Idempotency-Key`
+- `POST /v1/webhooks/leads/{source}` with HMAC-SHA256 signatures, a 5-minute replay window, and secret rotation
+- One transaction per lead: inbound event, contact, lead, workflow run, queued job, audit event; all or nothing
+- Idempotent under concurrency: 10 simultaneous identical requests produce exactly one lead (tested); same key with different content is a 409
+- Deterministic contact normalization (email, E.164 phone); unusable contact details are flagged, never a reason to drop a lead
+- 32 KB body limit, per-IP / per-key / per-source rate limits, `X-Forwarded-For` honored only from trusted proxies
+- Emails, phone numbers, and API keys masked in every log line; append-only audit table
+
+### Foundation (M1)
 
 - FastAPI app factory with typed settings that refuse to start on missing or unsafe configuration
 - Structured JSON logging (app and library logs) with a request ID on every line and response
 - `/healthz` (liveness) and `/readyz` (database reachable and migrations current)
 - Two PostgreSQL roles: the app can read and write rows but cannot change the schema; migrations run as a separate owner role
-- Alembic baseline migration, Dockerfile (non-root), Docker Compose stack
-- CI: ruff, mypy (strict), pytest against a real PostgreSQL, gitleaks, Docker build and Compose smoke test
+- Dockerfile (non-root), Docker Compose stack
+- CI: ruff, mypy (strict), pytest against a real PostgreSQL, gitleaks, Docker build and an end-to-end Compose smoke test
 
 ---
 
@@ -69,19 +83,29 @@ docker compose -f infra/docker-compose.yml up --build
 
 curl http://localhost:8000/healthz
 curl http://localhost:8000/readyz
+
+# Create an API key (printed once), then submit a lead
+docker compose -f infra/docker-compose.yml exec api leadops api-keys create --name local --scope leads:write
+curl -X POST http://localhost:8000/v1/leads \
+  -H "Authorization: Bearer <key>" -H "Idempotency-Key: demo-1" -H "Content-Type: application/json" \
+  -d '{"source": "website_form", "message": "Need a website", "email": "jane@example.com"}'
 ```
 
-Tests (unit tests need nothing; integration tests use the Compose database):
+API docs: <http://localhost:8000/docs>
+
+Tests (unit tests need nothing; integration tests reset the separate `leadops_test` database and only run when you opt in):
 
 ```bash
 docker compose -f infra/docker-compose.yml up -d db
 cd backend
 cp .env.example .env
 uv sync
-uv run alembic upgrade head
+export ALLOW_DESTRUCTIVE_TEST_DB=true     # PowerShell: $env:ALLOW_DESTRUCTIVE_TEST_DB = "true"
 uv run pytest
 uv run ruff check . && uv run ruff format --check . && uv run mypy src tests migrations
 ```
+
+The test suite refuses to reset any database that is not on localhost, not named `*_test`, or not explicitly opted in. If your Compose volume predates M2 (no `leadops_test` database), recreate it once: `docker compose -f infra/docker-compose.yml down -v`.
 
 Git hooks (gitleaks, ruff, whitespace checks), from the repository root:
 
@@ -112,7 +136,7 @@ uv run --project backend pre-commit install
 |---|---|---|
 | M0 | Architecture, decision records, design docs | Done |
 | M1 | Project foundation, CI, Docker, health checks, database roles | Done |
-| M2 | Data model, lead intake, webhook signatures, idempotency | Planned |
+| M2 | Data model, lead intake, webhook signatures, idempotency, API keys, rate limits | Done |
 | M3 | Job queue, worker, retries, lifecycle state machine | Planned |
 | M4 | LLM extraction, evidence checks, scoring, routing, AI telemetry | Planned |
 | M5 | Evaluation suite v1 | Planned |

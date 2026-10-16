@@ -14,5 +14,7 @@ Each ADR records one significant decision: the context, the choice, the alternat
 | [0008](0008-session-auth-api-keys-rbac.md) | Session authentication + scoped API keys + RBAC | Accepted |
 | [0009](0009-vite-react-spa-openapi-types.md) | Vite React SPA with OpenAPI-generated TypeScript types | Accepted |
 | [0010](0010-vps-docker-compose-deployment.md) | VPS + Docker Compose deployment | Accepted |
+| [0011](0011-in-process-rate-limiting-and-client-ip.md) | In-process rate limiting and trusted-proxy client IP | Accepted |
+| [0012](0012-api-key-format-and-hashing.md) | API key format and SHA-256 hashing | Accepted |
 
 Template: Status, Date, Context, Decision, Alternatives Considered, Tradeoffs, Consequences, Why This Fits This Project.
