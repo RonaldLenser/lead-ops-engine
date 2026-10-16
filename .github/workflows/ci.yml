@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend checks and tests
+    # Pinned runner image so an OS upgrade cannot silently change CI.
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: backend
+
+    # A real PostgreSQL, same major version as infra/docker-compose.yml.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: leadops
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d leadops"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+
+    env:
+      APP_ENV: test
+      # Tests run as the restricted application role, exactly like production.
+      DATABASE_URL: postgresql+asyncpg://leadops_app:leadops_app_dev@localhost:5432/leadops
+      MIGRATION_DATABASE_URL: postgresql+asyncpg://leadops_migrator:leadops_migrator_dev@localhost:5432/leadops
+      REQUIRE_DB: "1" # integration tests must FAIL, not skip, if the database is missing
+
+    steps:
+      # Actions pinned to commit SHAs: a tag can be moved, a SHA cannot.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Create database roles (same script as local Compose)
+        run: psql "postgresql://postgres:postgres@localhost:5432/leadops" -v ON_ERROR_STOP=1 -f ../infra/postgres/init/01-roles.sql
+
+      - name: Install dependencies (exactly as locked)
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format check
+        run: uv run ruff format --check .
+
+      - name: Type check
+        run: uv run mypy src tests migrations
+
+      - name: Apply migrations
+        run: uv run alembic upgrade head
+
+      - name: Tests
+        run: uv run pytest
+
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-24.04
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      # sha256 of gitleaks_8.30.1_linux_x64.tar.gz from the official release checksums.
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # scan the full history, not only the latest commit
+
+      - name: Install gitleaks (checksum verified)
+        run: |
+          curl -sSfL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum --check
+          tar -xzf gitleaks.tar.gz gitleaks
+
+      - name: Scan git history
+        run: ./gitleaks git --redact --verbose .
+
+  docker:
+    name: Docker image and Compose smoke test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build and start the stack (db, migrate, api)
+        run: docker compose -f infra/docker-compose.yml up --build --detach --wait
+
+      - name: Liveness and readiness
+        run: |
+          curl -sSf http://localhost:8000/healthz
+          curl -sSf http://localhost:8000/readyz
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker compose -f infra/docker-compose.yml logs
+
+      - name: Stop the stack
+        if: always()
+        run: docker compose -f infra/docker-compose.yml down --volumes

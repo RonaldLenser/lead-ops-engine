@@ -1,0 +1,64 @@
+# Local development stack: PostgreSQL, a one-shot migration job, and the API.
+#
+# Run from the repository root:
+#   docker compose -f infra/docker-compose.yml up --build      # everything, http://localhost:8000/docs
+#   docker compose -f infra/docker-compose.yml up -d db        # only the database (for pytest / uvicorn)
+#   docker compose -f infra/docker-compose.yml down            # stop (data kept in the volume)
+#   docker compose -f infra/docker-compose.yml down -v         # stop and DELETE the database volume
+#
+# All credentials here are for a throwaway local database. Production
+# credentials never live in this repository.
+
+name: leadops
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: leadops
+    ports:
+      # Host port 5434: avoids clashing with a local Postgres (5432) and with
+      # Grounded's Compose database (5433). Containers use db:5432.
+      - "5434:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Creates the leadops_migrator and leadops_app roles on first start.
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d leadops"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  # Runs `alembic upgrade head` once as the schema owner, then exits.
+  # The API waits for it, so it never starts against an outdated schema.
+  migrate:
+    build: ../backend
+    image: lead-ops-engine:local
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      APP_ENV: local
+      DATABASE_URL: postgresql+asyncpg://leadops_app:leadops_app_dev@db:5432/leadops
+      MIGRATION_DATABASE_URL: postgresql+asyncpg://leadops_migrator:leadops_migrator_dev@db:5432/leadops
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build: ../backend
+    image: lead-ops-engine:local
+    environment:
+      APP_ENV: local
+      LOG_LEVEL: INFO
+      # The application role: no DDL rights.
+      DATABASE_URL: postgresql+asyncpg://leadops_app:leadops_app_dev@db:5432/leadops
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:

@@ -1,0 +1,10 @@
+# Keep the build context small and secret-free.
+.env
+.env.*
+.venv
+**/__pycache__
+.pytest_cache
+.mypy_cache
+.ruff_cache
+tests
+Dockerfile
